@@ -1,0 +1,165 @@
+---
+title: "final"
+author: "Mingwen Yang"
+date: "5/6/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Problem C
+
+```{r}
+library(quantmod)
+library(fUnitRoots)
+getSymbols("MSFT", from="2015-01-01", to="2019-12-31", src = "yahoo")
+rt = dailyReturn(MSFT$MSFT.Adjusted, type = "log")
+rt_train = rt[2:1201]
+rt_test = rt[1202:1257]
+adfTest(rt)
+```
+Pick up "MSFT" for "Microsoft Corporation". Log return is stationary due to the small p-value of adf test. So when fit ARIMA model, fix d to 0.
+
+1.  
+```{r}
+for (p in 1:5) {
+  for (q in 1:5) {
+    md = arima(rt_train, order = c(p, 0, q))
+    print(c(p, q, md$aic))
+  }
+}
+# 3.000     3.000 -6704.944
+```
+Use the loops to identify the best arima orders. And from the result, we found when p = 3, q = 3, AIC has the smallest value, is -6704.944. So use ARMA(3, 3) to fit the time series.
+```{r}
+md1 = arima(rt_train, order = c(3, 0, 3))
+md1
+tsdiag(md1)
+```
+After fitting the model, perform model diagnosis on it. We could see from the result of model, all coefficients are quite significant. And from the diagnosis result, we could see there is no significant correlation in residuals from the plot of residuals. ACF of residuals cuts off at 0, and the p-value of box test is large enough. So this model is relatively adequate.
+
+2.  
+```{r}
+count = 0
+for (i in 1:56){
+  data_i = rt[i:(1200 + i)]
+  md_i = arima(data_i, order = c(3, 0, 3))
+  pre = predict(md_i, 1)[1]
+  
+  if (as.numeric(pre)*as.numeric(rt_test[i]) > 0)
+    count = count + 1
+}
+count
+```
+Use ARMA(3, 3) to predict the log return's direction. Keep fitting model with 1200 days' data, then predict one day ahead. After checking the direction with all 56 days' data in test set, I found 25 out of 56 predicted data sharing the same direction with real data.
+
+3.  
+```{r}
+Box.test(md1$residuals^2, 10, type = "Ljung")
+pacf(md1$residuals^2)
+```
+Apply box-test on the square of the residual of ARMA model, then it could be found that p-value is small enough. So we can conclude that there is ARCH effect. And to plot the PACF of the square of the residual of ARMA model, the order of ARCH model would be 1. So I fitted ARMA + GARCH model to train set next.
+```{r}
+library(fGarch)
+md2 = garchFit(~arma(3, 3) + garch(1, 0), data = rt_train, trace = F)
+summary(md2)
+md3 = garchFit(~arma(3, 3) + garch(1, 0), data = rt_train, cond.dist = c("std"), trace = F)
+summary(md3)
+md4 = garchFit(~arma(3, 3) + garch(1, 0), data = rt_train, cond.dist = c("sstd"), trace = F)
+summary(md4)
+```
+```{r}
+md5 = garchFit(~arma(3, 3) + garch(1, 1), data = rt_train, trace = F)
+summary(md5)
+md6 = garchFit(~arma(3, 3) + garch(1, 1), data = rt_train, cond.dist = c("std"), trace = F)
+summary(md6)
+md7 = garchFit(~arma(3, 3) + garch(1, 1), data = rt_train, cond.dist = c("sstd"), trace = F)
+summary(md7)
+```
+And choose ARMA(3, 3) + GARCH(1, 1) with t-distribution from ARMA(3, 3) + ARCH(1) models and ARMA(3, 3) + GARCH(1, 1) models with different error distribution, i.e. normal, t, skewed t distribution. All coefficients in it are significant and has the smallest AIC, -5.892. And from the results of all the box test of residual, p-value is large enough, so there is no correlation among residual, indicating it is a adequate model.  
+We got the model $$\begin{aligned}
+r_t&=4.09\times10^{-4}+0.41r_{t-1}-0.39r_{t-2}+0.67r_{t-3}+a_t-0.51a_{t-1}+0.39a_{t-2}-0.7a_{t-3}\\
+a_t&=\sigma_t\epsilon_t\\
+\sigma^2&=1.53\times10^{-5}+0.16a_{t-1}^2+0.8\sigma_{t-1}^2
+\end{aligned}$$
+```{r}
+md6 = garchFit(~arma(3, 3) + garch(1, 1), data = rt_train, cond.dist = c("std"), trace = F)
+summary(md6)
+```
+
+4.  
+```{r}
+pow1 = 0
+for (i in 1:56){
+  data_i = rt[i:(1200 + i)]
+  md_i = arima(data_i, order = c(3, 0, 3))
+  pre = predict(md_i, 1)[1]
+  if (as.numeric(pre) > 0)
+    pow1 = pow1 + as.numeric(rt_test[i])
+}
+v1 = 100000 * exp(pow1)
+v1
+```
+Like the prediction method in question 2, perform the rolling forecast for the last 56 days from 2019-10-9. And compute the total predicted profit, which is 7050.8 in this situation. So at the end of process, the value of portfolio would be $107050.8.
+
+5.  
+```{r}
+v2 = 100000
+for (i in 1:56){
+  data_i = rt[i:(1200 + i)]
+  md_i = garchFit(~arma(3, 3) + garch(1, 1), data = data_i, cond.dist = c("std"), trace = F)
+  prediction = predict(md_i, 1)
+  pre = prediction[1, 1]
+  vol = prediction[1, 3]
+  if (as.numeric(pre) > 0 && as.numeric(pre) < 0.1*as.numeric(vol))
+    v2 = v2 * 0.5 * exp(as.numeric(rt_test[i])) + 0.5 * v2
+  else if (as.numeric(pre) > 0.1*as.numeric(vol) && as.numeric(pre) < 0.2*as.numeric(vol))
+    v2 = v2 * 0.8 * exp(as.numeric(rt_test[i])) + 0.2 * v2
+  else if (as.numeric(pre) > 0.2*as.numeric(vol))
+    v2 = v2 * exp(as.numeric(rt_test[i]))
+}
+v2
+```
+Just as the method of prediction like before, with ARMA(3, 3) + GARCH(1, 1) this time, and at the end of process, the value is $108520.6.
+
+6.  
+```{r}
+pow1 = 0
+for (i in 1:56){
+  data_i = rt[i:(1200 + i)]
+  md_i = garchFit(~arma(3, 3) + garch(1, 1), data = data_i, cond.dist = c("std"), trace = F)
+  pre = predict(md_i, 1)[1]
+  if (as.numeric(pre) > 0)
+    pow1 = pow1 + as.numeric(rt_test[i])
+  else
+    pow1 = pow1 - as.numeric(rt_test[i])
+}
+v3 = 100000 * exp(pow1)
+v3
+```
+Because we need not to consider transaction costs, in addition to long the stock when prediction is positve, short the stock when prediction is negative. And we could get the value of $114217.9.
+```{r}
+v4 = 100000
+for (i in 1:56){
+  data_i = rt[i:(1200 + i)]
+  md_i = garchFit(~arma(3, 3) + garch(1, 1), data = data_i, cond.dist = c("std"), trace = F)
+  prediction = predict(md_i, 1)
+  pre = prediction[1, 1]
+  vol = prediction[1, 3]
+  ma = mean(rt[(1190 + i):(1200 + i)])
+  up = ma + vol
+  down = ma - vol
+  if (as.numeric(pre) > up)
+    v4 = v4 * exp(as.numeric(rt_test[i]))
+  else if (as.numeric(pre) > ma && as.numeric(pre) < up)
+    v4 = v4 * 0.7 * exp(as.numeric(rt_test[i])) + 0.3 * v2
+  else if (as.numeric(pre) > down && as.numeric(pre) < ma)
+    v4 = v4 * 0.7 * exp(as.numeric(rt_test[i])) + 0.3 * v2
+  else
+    v4 = v4
+}
+v4
+```
+We could set the mean value of the last 10 days before as the middel line, adding the predicted volatility as the upper line, while minus the predicted volatility as the down line. Then if the predicted return over upper line, buy with all value; if between the upper line and middel line, buy with 70% money; if between middle and down line, sell 70%; if lower than down line, sell all. Then at the end of process, we will get $108501.
